@@ -220,6 +220,25 @@ class ConversationDisplay:
     def _display_visualization(visualization_result) -> None:
         """Display a visualization result in Streamlit."""
         try:
+            # Generate unique key for chart to avoid ID conflicts
+            import time
+            import random
+            import uuid
+            
+            # Initialize chart counter in session state if not exists
+            if 'conversation_chart_counter' not in st.session_state:
+                st.session_state.conversation_chart_counter = 0
+            
+            # Increment counter for each chart
+            st.session_state.conversation_chart_counter += 1
+            
+            # Use multiple sources for uniqueness
+            timestamp = int(time.time() * 1000000)
+            random_num = random.randint(1000, 9999)
+            unique_id = str(uuid.uuid4())[:8]
+            counter = st.session_state.conversation_chart_counter
+            chart_key = f"conv_chart_{counter}_{timestamp}_{random_num}_{unique_id}"
+            
             # Handle VisualizationResult object
             if hasattr(visualization_result, 'chart_data') and hasattr(visualization_result, 'library'):
                 chart_data = visualization_result.chart_data
@@ -239,16 +258,16 @@ class ConversationDisplay:
             
             # Display based on library type
             if library == "plotly" or hasattr(chart_data, 'show'):
-                # Plotly figure
-                st.plotly_chart(chart_data, use_container_width=True)
+                # Plotly figure with unique key
+                st.plotly_chart(chart_data, use_container_width=True, key=chart_key)
             elif library == "matplotlib" or hasattr(chart_data, 'savefig'):
                 # Matplotlib figure
                 st.pyplot(chart_data)
             else:
                 # Try to detect and display
                 try:
-                    # Try plotly first
-                    st.plotly_chart(chart_data, use_container_width=True)
+                    # Try plotly first with unique key
+                    st.plotly_chart(chart_data, use_container_width=True, key=chart_key)
                 except:
                     try:
                         # Try matplotlib

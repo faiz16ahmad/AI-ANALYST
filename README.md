@@ -21,18 +21,21 @@ An intelligent CSV data analysis tool powered by Google Gemini AI and LangChain,
 ## 🛠️ Installation
 
 1. **Clone the repository**
+
    ```bash
    git clone https://github.com/faiz16ahmad/AI-ANALYST.git
    cd AI-ANALYST
    ```
 
 2. **Create a virtual environment**
+
    ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
 3. **Install dependencies**
+
    ```bash
    pip install -r requirements.txt
    ```
@@ -49,6 +52,7 @@ An intelligent CSV data analysis tool powered by Google Gemini AI and LangChain,
 ## 🚀 Usage
 
 1. **Start the application**
+
    ```bash
    streamlit run src/app.py
    ```

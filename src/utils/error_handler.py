@@ -114,21 +114,25 @@ class ErrorHandler:
         elif 'requests' in error_str or isinstance(error, requests.RequestException):
             return self._create_network_error(error, context)
         
-        # File-related errors
-        elif any(keyword in error_str for keyword in ['file', 'csv', 'upload', 'parse', 'read']):
+        # File-related errors (be more specific to avoid false positives)
+        elif any(keyword in error_str for keyword in ['file not found', 'csv parsing', 'upload failed', 'file corrupt']):
             return self._create_file_error(error, context)
         elif isinstance(error, (FileNotFoundError, PermissionError, pd.errors.EmptyDataError)):
             return self._create_file_error(error, context)
         
-        # Data-related errors
-        elif any(keyword in error_str for keyword in ['dataframe', 'column', 'index', 'dtype']):
+        # Data-related errors (check for specific data issues, not agent issues)
+        elif any(keyword in error_str for keyword in ['column not found', 'index error', 'dtype error']):
             return self._create_data_error(error, context)
-        elif isinstance(error, (KeyError, ValueError, IndexError)) and 'dataframe' in context.lower():
+        elif isinstance(error, (KeyError, ValueError, IndexError)) and 'dataframe' in context.lower() and 'agent' not in context.lower():
             return self._create_data_error(error, context)
         
         # Validation errors
         elif any(keyword in error_str for keyword in ['validation', 'invalid', 'required', 'missing']):
             return self._create_validation_error(error, context)
+        
+        # Agent initialization errors (specific handling for "No DataFrame loaded" type errors)
+        elif 'no dataframe loaded' in error_str or 'no data loaded' in error_str:
+            return self._create_agent_not_ready_error(error, context)
         
         # Processing errors
         elif any(keyword in error_str for keyword in ['agent', 'langchain', 'processing', 'execution']):
@@ -259,6 +263,23 @@ class ErrorHandler:
             ],
             technical_details=f"Context: {context}, Error: {str(error)}",
             error_code="VALIDATION_001"
+        )
+    
+    def _create_agent_not_ready_error(self, error: Exception, context: str) -> ErrorInfo:
+        """Create error info for agent not ready issues"""
+        return ErrorInfo(
+            category=ErrorCategory.PROCESSING_ERROR,
+            severity=ErrorSeverity.MEDIUM,
+            message=f"Agent not ready: {str(error)}",
+            user_message="🤖 Agent Not Ready: The AI agent is not properly initialized with your data.",
+            suggestions=[
+                "Try uploading your CSV file again",
+                "Check if the file uploaded successfully",
+                "Refresh the page and re-upload your data",
+                "Ensure your CSV file is valid and not corrupted"
+            ],
+            technical_details=f"Context: {context}, Error: {str(error)}",
+            error_code="AGENT_001"
         )
     
     def _create_processing_error(self, error: Exception, context: str) -> ErrorInfo:

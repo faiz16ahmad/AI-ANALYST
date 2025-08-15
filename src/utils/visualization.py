@@ -89,7 +89,7 @@ class VisualizationParser:
             r'regression\s+line', r'linear\s+regression', r'trend\s+line',
             r'best\s+fit\s+line', r'regression\s+plot', r'line\s+of\s+best\s+fit',
             r'trendline', r'fit\s+line', r'correlation\s+line', r'linear\s+trend',
-            r'regression', r'best\s+fit', r'trend', r'fit'
+            r'\bregression\b', r'best\s+fit', r'\btrend\b'
         ],
         ChartType.HISTOGRAM: [
             r'histogram', r'distribution', r'frequency\s+plot'
@@ -163,12 +163,14 @@ class VisualizationParser:
     @classmethod
     def _detect_chart_type(cls, query_lower: str) -> ChartType:
         """Detect chart type from query text"""
+        
+        # First, check for explicit chart type patterns (highest priority)
         for chart_type, patterns in cls.CHART_PATTERNS.items():
             for pattern in patterns:
                 if re.search(pattern, query_lower):
                     return chart_type
         
-        # INTELLIGENT REGRESSION DETECTION - prioritize regression for various natural language patterns
+        # INTELLIGENT REGRESSION DETECTION - only if no explicit chart type found
         
         # Direct regression terms
         direct_regression = ['regression', 'linear regression', 'regression line', 'regression plot']
@@ -185,11 +187,11 @@ class VisualizationParser:
         # Relationship terms that often need regression
         relationship_terms = ['linear relationship', 'correlation', 'relationship between']
         
-        # Check for distribution first (highest priority)
+        # Check for distribution first (highest priority among fallbacks)
         if any(word in query_lower for word in ['distribution', 'frequency']):
             return ChartType.HISTOGRAM
         
-        # Check for regression indicators (second highest priority)
+        # Check for regression indicators (second highest priority among fallbacks)
         elif any(term in query_lower for term in direct_regression):
             return ChartType.REGRESSION
         elif any(term in query_lower for term in trend_terms):
@@ -220,38 +222,62 @@ class VisualizationParser:
         """Extract column names from query text with improved matching"""
         mentioned_columns = []
         
-        # Look for exact column matches (case insensitive)
-        for col in df_columns:
-            col_lower = col.lower()
-            
-            # Direct exact match
-            if col_lower in query_lower:
-                mentioned_columns.append(col)
-                continue
-            
-            # Handle underscores - check if column name with spaces matches
-            col_with_spaces = col_lower.replace('_', ' ')
-            if col_with_spaces in query_lower:
-                mentioned_columns.append(col)
-                continue
-            
-            # Handle partial matches for compound column names
-            col_parts = col_lower.replace('_', ' ').split()
-            if len(col_parts) > 1:
-                # Check if all parts of the column name are mentioned
-                if all(part in query_lower for part in col_parts):
+        # Special handling for heatmap queries with "by" pattern (e.g., "profit by category and region")
+        if 'heatmap' in query_lower and ' by ' in query_lower:
+            # Extract the pattern: "value by column1 and column2"
+            by_parts = query_lower.split(' by ')
+            if len(by_parts) >= 2:
+                # Look for columns mentioned after "by"
+                after_by = by_parts[1]
+                # Split on "and" to get multiple grouping columns
+                grouping_parts = after_by.replace(' and ', '|').replace(',', '|').split('|')
+                
+                for part in grouping_parts:
+                    part = part.strip()
+                    # Find matching columns
+                    for col in df_columns:
+                        col_lower = col.lower()
+                        col_with_spaces = col_lower.replace('_', ' ')
+                        
+                        if (col_lower in part or part in col_lower or 
+                            col_with_spaces in part or part in col_with_spaces):
+                            if col not in mentioned_columns:
+                                mentioned_columns.append(col)
+        
+        # Regular column extraction if no special pattern found
+        if not mentioned_columns:
+            # Look for exact column matches (case insensitive)
+            for col in df_columns:
+                col_lower = col.lower()
+                
+                # Direct exact match
+                if col_lower in query_lower:
                     mentioned_columns.append(col)
                     continue
-            
-            # Check for column name mentioned after common keywords
-            keywords = ['for', 'of', 'plot', 'chart', 'show', 'display', 'visualize']
-            for keyword in keywords:
-                # Look for patterns like "box plot for Monthly_Allowance" or "chart of age"
-                pattern_exact = f"{keyword} {col_lower}"
-                pattern_spaces = f"{keyword} {col_with_spaces}"
-                if pattern_exact in query_lower or pattern_spaces in query_lower:
+                
+                # Handle underscores - check if column name with spaces matches
+                col_with_spaces = col_lower.replace('_', ' ')
+                if col_with_spaces in query_lower:
                     mentioned_columns.append(col)
-                    break
+                    continue
+                
+                # Handle partial matches for compound column names
+                col_parts = col_lower.replace('_', ' ').split()
+                if len(col_parts) > 1:
+                    # Check if all parts of the column name are mentioned
+                    if all(part in query_lower for part in col_parts):
+                        mentioned_columns.append(col)
+                        continue
+                
+                # Check for column name mentioned after common keywords
+                keywords = ['for', 'of', 'plot', 'chart', 'show', 'display', 'visualize']
+                for keyword in keywords:
+                    # Look for patterns like "box plot for Monthly_Allowance" or "chart of age"
+                    pattern_exact = f"{keyword} {col_lower}"
+                    pattern_spaces = f"{keyword} {col_with_spaces}"
+                    if pattern_exact in query_lower or pattern_spaces in query_lower:
+                        mentioned_columns.append(col)
+                        break
         
         # Remove duplicates while preserving order
         unique_columns = []
@@ -267,7 +293,30 @@ class VisualizationParser:
     
     @classmethod
     def _extract_color_column(cls, query_lower: str, df_columns: List[str]) -> Optional[str]:
-        """Extract color column from query text"""
+        """Extract color column from query text - for heatmaps, this represents the value column"""
+        
+        # Special handling for heatmap value extraction
+        if 'heatmap' in query_lower:
+            # Look for value column mentioned before "by" (e.g., "profit by category and region")
+            if ' by ' in query_lower:
+                before_by = query_lower.split(' by ')[0]
+                # Look for value column names in the part before "by"
+                value_candidates = ['profit', 'sales', 'revenue', 'amount', 'value', 'total', 'sum', 'count']
+                
+                for col in df_columns:
+                    col_lower = col.lower()
+                    col_with_spaces = col_lower.replace('_', ' ')
+                    
+                    # Check if column name appears before "by"
+                    if col_lower in before_by or col_with_spaces in before_by:
+                        return col
+                    
+                    # Check if column contains value-related terms
+                    if any(candidate in col_lower for candidate in value_candidates):
+                        if any(candidate in before_by for candidate in value_candidates):
+                            return col
+        
+        # Regular color column extraction for other chart types
         # Look for color-related keywords
         color_keywords = ['color', 'colour', 'colored', 'coloured', 'by', 'group by', 'categorize', 'category']
         
@@ -604,16 +653,84 @@ class ChartGenerator:
         return fig
     
     def _create_plotly_heatmap(self, df: pd.DataFrame, request: VisualizationRequest) -> go.Figure:
-        """Create Plotly heatmap"""
-        # Use correlation matrix of numeric columns
-        numeric_df = df.select_dtypes(include=['number'])
-        if numeric_df.shape[1] < 2:
-            raise ValueError("Need at least two numeric columns for heatmap")
+        """Create Plotly heatmap - supports both correlation matrices and pivot table heatmaps"""
         
-        corr_matrix = numeric_df.corr()
-        fig = px.imshow(corr_matrix, text_auto=True, aspect="auto", title=request.title)
+        # Check if we have specific columns for pivot table heatmap
+        if request.x_column and request.y_column:
+            # Create pivot table heatmap
+            # x_column = categories (e.g., Category), y_column = grouping (e.g., Region)
+            # We need a value column - use color_column if specified, otherwise find a numeric column
+            
+            value_column = None
+            if request.color_column and request.color_column in df.columns:
+                if pd.api.types.is_numeric_dtype(df[request.color_column]):
+                    value_column = request.color_column
+            
+            # If no value column specified, try to infer from common patterns
+            if value_column is None:
+                # Look for common value column names
+                value_candidates = ['profit', 'sales', 'revenue', 'amount', 'value', 'total']
+                for col in df.columns:
+                    if any(candidate in col.lower() for candidate in value_candidates):
+                        if pd.api.types.is_numeric_dtype(df[col]):
+                            value_column = col
+                            break
+                
+                # If still no value column, use the first numeric column
+                if value_column is None:
+                    numeric_cols = df.select_dtypes(include=['number']).columns
+                    if len(numeric_cols) > 0:
+                        value_column = numeric_cols[0]
+                    else:
+                        raise ValueError("No numeric column found for heatmap values")
+            
+            # Create pivot table
+            try:
+                pivot_table = df.pivot_table(
+                    values=value_column,
+                    index=request.y_column,  # Rows (e.g., Region)
+                    columns=request.x_column,  # Columns (e.g., Category)
+                    aggfunc='sum',  # Aggregate function
+                    fill_value=0
+                )
+                
+                # Create heatmap
+                fig = px.imshow(
+                    pivot_table.values,
+                    x=pivot_table.columns,
+                    y=pivot_table.index,
+                    text_auto=True,
+                    aspect="auto",
+                    title=request.title or f"{value_column} by {request.x_column} and {request.y_column}",
+                    labels={'color': value_column}
+                )
+                
+                # Update layout for better readability
+                fig.update_layout(
+                    xaxis_title=request.x_column,
+                    yaxis_title=request.y_column
+                )
+                
+                return fig
+                
+            except Exception as e:
+                raise ValueError(f"Could not create pivot table heatmap: {str(e)}")
         
-        return fig
+        else:
+            # Default to correlation matrix heatmap
+            numeric_df = df.select_dtypes(include=['number'])
+            if numeric_df.shape[1] < 2:
+                raise ValueError("Need at least two numeric columns for correlation heatmap")
+            
+            corr_matrix = numeric_df.corr()
+            fig = px.imshow(
+                corr_matrix, 
+                text_auto=True, 
+                aspect="auto", 
+                title=request.title or "Correlation Matrix"
+            )
+            
+            return fig
     
     def _create_plotly_area(self, df: pd.DataFrame, request: VisualizationRequest) -> go.Figure:
         """Create Plotly area chart"""

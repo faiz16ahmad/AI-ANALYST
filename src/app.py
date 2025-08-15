@@ -117,6 +117,35 @@ def initialize_agent() -> tuple[bool, str]:
         st.session_state.agent_initialized = False
         return False, error_info.user_message
 
+def ensure_agent_ready() -> tuple[bool, str]:
+    """
+    Ensure the agent is ready for processing queries.
+    
+    Returns:
+        tuple: (is_ready, error_message)
+    """
+    # Check if agent exists
+    if 'agent' not in st.session_state or st.session_state.agent is None:
+        return False, "Agent not initialized. Please upload a CSV file."
+    
+    # Check if agent has dataframe
+    if not hasattr(st.session_state.agent, 'dataframe') or st.session_state.agent.dataframe is None:
+        # Try to reload dataframe if we have one in session state
+        if 'dataframe' in st.session_state and st.session_state.dataframe is not None:
+            try:
+                st.session_state.agent.load_dataframe(st.session_state.dataframe)
+                return True, ""
+            except Exception as e:
+                return False, f"Failed to reload dataframe into agent: {str(e)}"
+        else:
+            return False, "No data loaded. Please upload a CSV file."
+    
+    # Check if agent is ready
+    if not st.session_state.agent.is_ready():
+        return False, "Agent is not ready. Please re-upload your CSV file."
+    
+    return True, ""
+
 def validate_csv_file(uploaded_file) -> tuple[bool, str]:
     """
     Validate uploaded CSV file format and content using enhanced validation.
@@ -538,6 +567,13 @@ def main():
                         if config.GOOGLE_API_KEY:
                             st.write(f"API key starts with: {config.GOOGLE_API_KEY[:10]}...")
                         
+                        if st.button("🔍 Check Agent Readiness"):
+                            agent_ready, agent_error = ensure_agent_ready()
+                            if agent_ready:
+                                st.success("✅ Agent is ready!")
+                            else:
+                                st.error(f"❌ Agent not ready: {agent_error}")
+                        
                         if st.button("Reset Processing State"):
                             st.session_state.is_processing = False
                             st.rerun()
@@ -584,7 +620,10 @@ def main():
                                 st.session_state.is_processing = False
                                 return
                             
-                            if st.session_state.agent and st.session_state.agent.is_ready():
+                            # Ensure agent is ready before processing
+                            agent_ready, agent_error = ensure_agent_ready()
+                            
+                            if agent_ready:
                                 try:
                                     # Process query with the agent
                                     agent_response = st.session_state.agent.process_query(user_query)
@@ -641,15 +680,8 @@ def main():
                                     update_conversation_metadata(success=False, has_visualization=False)
                                     
                             else:
-                                # Agent not ready - provide specific guidance
-                                if not st.session_state.agent_initialized:
-                                    error_msg = "🤖 AI agent is not initialized. Please check your API key configuration."
-                                elif not st.session_state.agent:
-                                    error_msg = "🤖 AI agent is not available. Please try reloading your data."
-                                elif not st.session_state.agent.is_ready():
-                                    error_msg = "📊 AI agent is not ready. Please ensure your data is properly loaded."
-                                else:
-                                    error_msg = "⚙️ AI agent is in an unknown state. Please try refreshing the page."
+                                # Agent not ready - provide specific guidance based on the error
+                                error_msg = f"🤖 Agent Not Ready: {agent_error}"
                                 
                                 ConversationManager.add_message(
                                     'assistant',
@@ -657,10 +689,10 @@ def main():
                                     error=True,
                                     success=False,
                                     error_suggestions=[
-                                        "Check your Google API key configuration",
                                         "Try re-uploading your CSV file",
-                                        "Refresh the page and try again",
-                                        "Contact support if the problem persists"
+                                        "Check if the file uploaded successfully",
+                                        "Refresh the page and re-upload your data",
+                                        "Ensure your CSV file is valid and not corrupted"
                                     ]
                                 )
                                 
