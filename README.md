@@ -1,4 +1,4 @@
-# CSV Data Analyst
+# AI-ANALYST
 
 An intelligent CSV data analysis tool powered by Google Gemini AI and LangChain, featuring natural language queries and interactive visualizations.
 
@@ -22,8 +22,8 @@ An intelligent CSV data analysis tool powered by Google Gemini AI and LangChain,
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/csv-data-analyst.git
-   cd csv-data-analyst
+   git clone https://github.com/faiz16ahmad/AI-ANALYST.git
+   cd AI-ANALYST
    ```
 
 2. **Create a virtual environment**
@@ -77,7 +77,7 @@ An intelligent CSV data analysis tool powered by Google Gemini AI and LangChain,
 ## 🏗️ Project Structure
 
 ```
-csv-data-analyst/
+AI-ANALYST/
 ├── src/
 │   ├── agents/
 │   │   └── csv_analyst_agent.py    # Main AI agent
