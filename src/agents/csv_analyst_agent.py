@@ -16,10 +16,20 @@ from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe
 from langchain.memory import ConversationBufferMemory
 from langchain.schema import BaseMessage, HumanMessage, AIMessage
 
-from ..config import Config
-from ..utils.langchain_viz_tool import create_visualization_tool
-from ..utils.visualization import VisualizationResult
-from ..utils.error_handler import error_handler
+try:
+    from ..config import Config
+    from ..utils.langchain_viz_tool import create_visualization_tool
+    from ..utils.visualization import VisualizationResult
+    from ..utils.error_handler import error_handler
+except ImportError:
+    # Fallback for different import contexts
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+    from config import Config
+    from utils.langchain_viz_tool import create_visualization_tool
+    from utils.visualization import VisualizationResult
+    from utils.error_handler import error_handler
 
 
 @dataclass
@@ -99,6 +109,14 @@ class CSVAnalystAgent:
             default_library=self.config.DEFAULT_CHART_LIBRARY
         )
         
+        # Create custom Python execution tool for capturing LLM-generated figures
+        try:
+            from ..utils.custom_python_tool import create_custom_python_tool
+        except ImportError:
+            from utils.custom_python_tool import create_custom_python_tool
+        
+        self.python_tool = create_custom_python_tool(self.dataframe)
+        
         # Create the pandas DataFrame agent with visualization tool
         try:
             # Create pandas DataFrame agent with proper configuration for Gemini
@@ -110,7 +128,7 @@ class CSVAnalystAgent:
                 allow_dangerous_code=True,  # Required for pandas agent
                 max_iterations=10,  # Increased iterations for complex queries
                 handle_parsing_errors=True,  # Handle parsing errors gracefully
-                extra_tools=[self.visualization_tool]  # Add visualization tool
+                extra_tools=[self.visualization_tool, self.python_tool]  # Add visualization and Python tools
             )
         except Exception as e:
             error_info = error_handler.handle_error(e, "Pandas DataFrame agent creation")
@@ -159,6 +177,13 @@ class CSVAnalystAgent:
             if self.visualization_tool:
                 visualization = self.visualization_tool.get_current_visualization()
             
+            # Also check for figures from custom Python tool
+            if not visualization and self.python_tool:
+                visualization = self.python_tool.get_last_figure()
+                if visualization:
+                    # Clear the figure after capturing it
+                    self.python_tool.clear_figure()
+            
             return AgentResponse(
                 text_response=response_text,
                 visualization=visualization,
@@ -173,7 +198,32 @@ class CSVAnalystAgent:
             )
             
         except Exception as e:
-            # Use enhanced error handling
+            error_str = str(e)
+            
+            # Check for package-related errors
+            if any(pkg in error_str.lower() for pkg in ['modulenotfounderror', 'importerror', 'no module named']):
+                # This is likely a missing package error
+                package_error_response = f"""
+I encountered an error trying to import a required package. This might be because the code attempted to use a package that's not installed in this environment.
+
+Available packages: pandas, plotly, numpy
+Error: {error_str}
+
+Let me try a different approach using only the available packages.
+"""
+                return AgentResponse(
+                    text_response=package_error_response,
+                    success=False,
+                    error_message=f"Package import error: {error_str}",
+                    execution_details={
+                        "question": question,
+                        "error": str(e),
+                        "error_type": "package_import_error",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+            
+            # Use enhanced error handling for other errors
             error_info = error_handler.handle_error(e, "Agent query processing")
             return AgentResponse(
                 text_response=error_info.user_message,
@@ -214,7 +264,12 @@ class CSVAnalystAgent:
                 dtype_details.append(f"{col} ({self.dataframe[col].dtype})")
             dtypes_info = f"Key column types: {', '.join(dtype_details)}"
         
-        enhanced_question = f"""
+        # Check if this is a visualization request and handle it specially
+        is_heatmap_request = any(word in question.lower() for word in ['heatmap', 'heat map'])
+        is_viz_request = any(word in question.lower() for word in ['plot', 'chart', 'graph', 'visualize', 'show', 'display'])
+        
+        if is_heatmap_request:
+            enhanced_question = f"""
 Dataset Context:
 {shape_info}
 {columns_info}
@@ -222,9 +277,127 @@ Dataset Context:
 
 User Question: {question}
 
-Please provide a comprehensive analysis based on the user's question. If the question involves creating visualizations (charts, plots, graphs), use the create_visualization tool to generate the appropriate chart. You have access to various chart types including bar charts, line charts, scatter plots, histograms, box plots, pie charts, heatmaps, and area charts.
+This is a heatmap visualization request. You MUST use the create_visualization tool to create this heatmap. 
 
-For visualization requests, call the create_visualization tool with a clear description of what to visualize, and then provide additional context and insights about the data in your response.
+Step 1: Call create_visualization("{question}")
+Step 2: Provide analysis of the data shown in the heatmap
+
+DO NOT attempt to create heatmaps using pandas, matplotlib, seaborn, or any other method. The create_visualization tool handles all heatmap types including pivot table heatmaps and correlation matrices.
+
+IMPORTANT: If you need to write Python code, ALWAYS use execute_python_code instead of python_repl_ast for better Streamlit integration.
+"""
+        elif is_viz_request:
+            enhanced_question = f"""
+Dataset Context:
+{shape_info}
+{columns_info}
+{dtypes_info}
+
+User Question: {question}
+
+This is a visualization request. Follow this SMART ROUTING process:
+
+Step 1: Call create_visualization("{question}")
+Step 2: Analyze the response:
+   - If successful: Great! Provide insights about the visualization
+   - If "CUSTOM_CODE_REQUIRED": 
+     IMMEDIATELY write custom code using execute_python_code
+
+IMPORTANT: When you see "CUSTOM_CODE_REQUIRED", this means:
+1. Our simple tool cannot handle this request
+2. You MUST write pandas/plotly code using execute_python_code (NOT python_repl_ast)
+3. DO NOT keep trying create_visualization - it will keep failing
+4. This overrides the "don't use pandas directly" rule
+5. ALWAYS prefer execute_python_code over python_repl_ast for better Streamlit integration
+
+WHEN TO WRITE CUSTOM CODE (using execute_python_code):
+- Any time create_visualization returns "CUSTOM_CODE_REQUIRED"
+- Complex styling (gradients, custom colors, annotations)
+- ALWAYS use execute_python_code instead of python_repl_ast for Python code execution
+- Multiple chart types combined
+- Advanced features (dual-axis, subplots, custom layouts)
+- Ambiguous requests that need data exploration
+
+CODE EXAMPLES FOR COMMON CASES:
+
+DUAL-AXIS CHART:
+```python
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+# Aggregate data by time period
+monthly_data = df.groupby(df['OrderDate'].dt.to_period('M'))[['TotalSales', 'Profit']].sum().reset_index()
+monthly_data['Month'] = monthly_data['OrderDate'].astype(str)
+
+# Create dual-axis chart
+fig = make_subplots(specs=[[{{"secondary_y": True}}]])
+fig.add_trace(go.Bar(x=monthly_data['Month'], y=monthly_data['TotalSales'], name="Sales"), secondary_y=False)
+fig.add_trace(go.Scatter(x=monthly_data['Month'], y=monthly_data['Profit'], mode='lines+markers', name="Profit"), secondary_y=True)
+fig.update_yaxes(title_text="Sales", secondary_y=False)
+fig.update_yaxes(title_text="Profit", secondary_y=True)
+fig.update_layout(title="Monthly Sales and Profit")
+# Return the figure for Streamlit display
+fig
+```
+
+CUSTOM STYLING:
+```python
+import plotly.express as px
+
+# Create chart with custom styling
+fig = px.bar(df, x='Category', y='Sales', color='Sales',
+             color_continuous_scale='Blues',
+             title='Sales by Category')
+fig.update_traces(texttemplate='%{{y}}', textposition='outside')
+# Return the figure for Streamlit display
+fig
+```
+
+AVAILABLE PACKAGES: Only use these pre-installed packages:
+- pandas (as pd) - already imported as 'df'
+- plotly.express (as px) 
+- plotly.graph_objects (as go)
+- plotly.subplots (make_subplots)
+- numpy (as np)
+
+DO NOT use: seaborn, matplotlib.pyplot, sklearn, or any other packages.
+
+IMPORTANT: When creating visualizations with code:
+- DO NOT use fig.show() - this opens new browser tabs
+- Instead, end your code with just 'fig' to return the figure object
+- The figure will be automatically displayed in the Streamlit interface
+
+HEATMAP CODE EXAMPLE (for when create_visualization fails):
+```python
+import plotly.express as px
+
+# Create pivot table
+pivot_data = df.pivot_table(values='Profit', index='Category', columns='Region', aggfunc='sum')
+
+# Create heatmap
+fig = px.imshow(pivot_data.values, 
+                x=pivot_data.columns, 
+                y=pivot_data.index,
+                text_auto=True,
+                title="Profit by Category and Region")
+# Return the figure for Streamlit display
+fig
+```
+
+PRINCIPLE: Try the tool first for simple cases, write code for complex/custom requirements using ONLY the available packages listed above.
+"""
+        else:
+            enhanced_question = f"""
+Dataset Context:
+{shape_info}
+{columns_info}
+{dtypes_info}
+
+User Question: {question}
+
+Please provide a comprehensive analysis based on the user's question. If you need to create any visualizations, use the create_visualization tool.
+
+IMPORTANT: If you need to write Python code, ALWAYS use execute_python_code instead of python_repl_ast for better Streamlit integration.
 """
         
         return enhanced_question

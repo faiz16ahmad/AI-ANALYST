@@ -35,6 +35,13 @@ class ChartType(Enum):
     HEATMAP = "heatmap"
     AREA = "area"
     REGRESSION = "regression"  # Scatter plot with regression line
+    TREEMAP = "treemap"  # Treemap visualization
+    
+    # Complex chart types (handled by agent code generation)
+    DUAL_AXIS = "dual_axis"
+    COMBO = "combo"
+    COMPLEX_MULTI = "complex_multi"
+    CUSTOM = "custom"
 
 
 @dataclass
@@ -68,7 +75,9 @@ class VisualizationParser:
     VISUALIZATION_KEYWORDS = [
         'plot', 'chart', 'graph', 'visualize', 'show', 'display',
         'histogram', 'bar chart', 'line chart', 'scatter plot',
-        'pie chart', 'box plot', 'heatmap', 'distribution'
+        'pie chart', 'box plot', 'heatmap', 'treemap', 'distribution',
+        'compare', 'comparison', 'trend', 'analyze', 'analysis',
+        'relationship', 'correlation', 'breakdown', 'across'
     ]
     
     # Chart type patterns
@@ -103,8 +112,18 @@ class VisualizationParser:
         ChartType.HEATMAP: [
             r'heatmap', r'heat\s+map', r'correlation\s+matrix'
         ],
+        ChartType.TREEMAP: [
+            r'treemap', r'tree\s+map', r'hierarchical\s+chart'
+        ],
         ChartType.AREA: [
             r'area\s+chart', r'area\s+plot', r'filled\s+line'
+        ],
+        ChartType.DUAL_AXIS: [
+            r'dual\s+axis', r'dual-axis', r'two\s+y\s+axis', r'secondary\s+axis',
+            r'left.*right.*axis', r'bars.*line', r'combo.*chart'
+        ],
+        ChartType.COMBO: [
+            r'combo\s+chart', r'combination\s+chart', r'mixed\s+chart'
         ]
     }
     
@@ -125,7 +144,7 @@ class VisualizationParser:
     @classmethod
     def parse_visualization_request(cls, query: str, df_columns: List[str]) -> Optional[VisualizationRequest]:
         """
-        Parse a natural language query to extract visualization parameters.
+        Parse a natural language query to extract visualization parameters using intelligent analysis.
         
         Args:
             query: Natural language query
@@ -139,14 +158,15 @@ class VisualizationParser:
         
         query_lower = query.lower()
         
-        # Detect chart type
-        chart_type = cls._detect_chart_type(query_lower)
-        
-        # Extract column references
+        # Extract column references first (helps with chart type detection)
         x_column, y_column = cls._extract_columns(query_lower, df_columns)
-        
-        # Extract color column if mentioned
         color_column = cls._extract_color_column(query_lower, df_columns)
+        
+        # Use intelligent chart type detection with column context
+        chart_type = cls._detect_chart_type_with_context(query_lower, x_column, y_column, color_column, df_columns)
+        
+        # Assess confidence level - CRITICAL for deciding tool vs LLM
+        confidence_score = cls._assess_confidence(query_lower, chart_type, x_column, y_column, color_column, df_columns)
         
         # Generate title
         title = cls._generate_title(query, chart_type, x_column, y_column)
@@ -157,73 +177,299 @@ class VisualizationParser:
             y_column=y_column,
             color_column=color_column,
             title=title,
-            additional_params={}
+            additional_params={'confidence_score': confidence_score}
         )
     
     @classmethod
-    def _detect_chart_type(cls, query_lower: str) -> ChartType:
-        """Detect chart type from query text"""
+    def _assess_confidence_llm_based(cls, query: str, df_columns: List[str]) -> float:
+        """
+        Alternative: Use LLM to assess confidence (more accurate but slower)
+        """
+        # This would be implemented if we want LLM-based assessment
+        # For now, we'll stick with rule-based for speed
+        pass
+    
+    @classmethod
+    def _assess_confidence(cls, query_lower: str, chart_type: ChartType, 
+                          x_column: Optional[str], y_column: Optional[str], 
+                          color_column: Optional[str], df_columns: List[str]) -> float:
+        """
+        Assess confidence level for using our tool vs LLM code generation.
         
-        # First, check for explicit chart type patterns (highest priority)
+        Returns:
+            Float between 0.0 (no confidence, use LLM) and 1.0 (high confidence, use tool)
+        """
+        confidence = 0.0
+        
+        # HIGH CONFIDENCE INDICATORS (use our tool)
+        
+        # 1. Explicit chart type mentioned
+        explicit_chart_patterns = [
+            r'\bbar chart\b', r'\bline chart\b', r'\bscatter plot\b', 
+            r'\bhistogram\b', r'\bbox plot\b', r'\bpie chart\b', r'\bheatmap\b'
+        ]
+        if any(re.search(pattern, query_lower) for pattern in explicit_chart_patterns):
+            confidence += 0.4
+        
+        # 2. Simple, clear structure
+        simple_patterns = [
+            r'show.*chart', r'create.*plot', r'generate.*graph',
+            r'plot.*vs', r'chart.*by', r'histogram.*of'
+        ]
+        if any(re.search(pattern, query_lower) for pattern in simple_patterns):
+            confidence += 0.3
+        
+        # 3. Clear column references
+        if x_column and x_column in df_columns:
+            confidence += 0.2
+        if y_column and y_column in df_columns:
+            confidence += 0.2
+        
+        # 4. Standard chart types we handle well
+        high_confidence_types = [ChartType.BAR, ChartType.LINE, ChartType.SCATTER, 
+                               ChartType.HISTOGRAM, ChartType.BOX, ChartType.PIE, ChartType.HEATMAP, ChartType.TREEMAP]
+        if chart_type in high_confidence_types:
+            confidence += 0.3
+        
+        # LOW CONFIDENCE INDICATORS (use LLM)
+        
+        # 1. Complex styling requirements
+        complex_styling = [
+            'gradient', 'custom color', 'data labels', 'annotations',
+            'styling', 'format', 'theme', 'advanced', 'sophisticated'
+        ]
+        if any(term in query_lower for term in complex_styling):
+            confidence -= 0.4
+        
+        # 2. Multiple chart types or complex combinations
+        multi_chart_indicators = [
+            'and', 'with', 'plus', 'combined', 'overlay', 'multiple'
+        ]
+        chart_type_count = sum(1 for pattern in explicit_chart_patterns 
+                              if re.search(pattern, query_lower))
+        if chart_type_count > 1 or any(term in query_lower for term in multi_chart_indicators):
+            confidence -= 0.3
+        
+        # 3. Vague or ambiguous requests
+        vague_terms = [
+            'analyze', 'explore', 'investigate', 'understand', 'insights',
+            'patterns', 'trends', 'relationships', 'overview'
+        ]
+        if any(term in query_lower for term in vague_terms) and not any(re.search(pattern, query_lower) for pattern in explicit_chart_patterns):
+            confidence -= 0.3
+        
+        # 4. Specific technical requirements
+        technical_requirements = [
+            'axis', 'scale', 'log', 'normalize', 'aggregate', 'group by',
+            'filter', 'sort', 'transform', 'calculate'
+        ]
+        if any(term in query_lower for term in technical_requirements):
+            confidence -= 0.2
+        
+        # 5. Long, complex queries (>100 characters with multiple clauses)
+        if len(query_lower) > 100 and query_lower.count(',') > 2:
+            confidence -= 0.2
+        
+        # Ensure confidence is between 0 and 1
+        return max(0.0, min(1.0, confidence))
+    
+    @classmethod
+    def _detect_chart_type_with_context(cls, query_lower: str, x_column: Optional[str], 
+                                       y_column: Optional[str], color_column: Optional[str],
+                                       df_columns: List[str]) -> ChartType:
+        """
+        Detect chart type using both query text and column context for better accuracy.
+        """
+        # First, check for explicit chart type mentions
         for chart_type, patterns in cls.CHART_PATTERNS.items():
             for pattern in patterns:
                 if re.search(pattern, query_lower):
                     return chart_type
         
-        # INTELLIGENT REGRESSION DETECTION - only if no explicit chart type found
+        # Use context-aware intelligent detection
+        return cls._context_aware_chart_detection(query_lower, x_column, y_column, color_column, df_columns)
+    
+    @classmethod
+    def _context_aware_chart_detection(cls, query_lower: str, x_column: Optional[str], 
+                                     y_column: Optional[str], color_column: Optional[str],
+                                     df_columns: List[str]) -> ChartType:
+        """
+        Determine chart type based on query intent AND data structure context.
+        """
+        # Analyze the data structure context
+        has_two_dimensions = x_column and y_column
+        has_value_column = color_column
         
-        # Direct regression terms
-        direct_regression = ['regression', 'linear regression', 'regression line', 'regression plot']
+        # Special case: Multi-dimensional aggregation queries (heatmap territory)
+        aggregation_patterns = ['by', 'across', 'grouped by', 'broken down by']
+        multi_dim_indicators = [' and ', ',', 'vs', 'versus']
         
-        # Trend and fit terms
-        trend_terms = ['trend line', 'trendline', 'best fit', 'fit line', 'line of best fit']
+        if any(pattern in query_lower for pattern in aggregation_patterns):
+            # Check if query mentions multiple grouping dimensions
+            for pattern in aggregation_patterns:
+                if pattern in query_lower:
+                    after_pattern = query_lower.split(pattern, 1)[1]
+                    if any(indicator in after_pattern for indicator in multi_dim_indicators):
+                        # Only heatmap if we actually have two dimensions AND a value
+                        if has_two_dimensions and (has_value_column or 'profit' in query_lower or 'sales' in query_lower):
+                            return ChartType.HEATMAP
         
-        # Natural language patterns that imply regression
-        natural_patterns = [
-            'make a line', 'draw a line', 'add a line', 'show the line',
-            'line based on', 'line through', 'line connecting'
-        ]
-        
-        # Relationship terms that often need regression
-        relationship_terms = ['linear relationship', 'correlation', 'relationship between']
-        
-        # Check for distribution first (highest priority among fallbacks)
-        if any(word in query_lower for word in ['distribution', 'frequency']):
+        # Intent-based detection with data context
+        if 'distribution' in query_lower or 'frequency' in query_lower:
             return ChartType.HISTOGRAM
         
-        # Check for regression indicators (second highest priority among fallbacks)
-        elif any(term in query_lower for term in direct_regression):
-            return ChartType.REGRESSION
-        elif any(term in query_lower for term in trend_terms):
-            return ChartType.REGRESSION
-        elif any(pattern in query_lower for pattern in natural_patterns):
-            return ChartType.REGRESSION
-        elif any(term in query_lower for term in relationship_terms):
-            return ChartType.REGRESSION
+        elif any(word in query_lower for word in ['correlation', 'relationship', 'association']):
+            if 'matrix' in query_lower or not has_two_dimensions:
+                return ChartType.HEATMAP  # Correlation matrix
+            elif any(word in query_lower for word in ['linear', 'regression', 'trend line', 'fit']):
+                return ChartType.REGRESSION
+            else:
+                return ChartType.SCATTER
         
-        # Additional regression detection for common phrases
-        elif 'line' in query_lower and any(word in query_lower for word in ['between', 'vs', 'versus', 'and']):
-            return ChartType.REGRESSION
-        elif 'trend' in query_lower:
-            return ChartType.REGRESSION
-        elif 'fit' in query_lower:
-            return ChartType.REGRESSION
-        
-        # Time series
-        elif any(word in query_lower for word in ['over time', 'timeline']):
+        elif any(word in query_lower for word in ['trend', 'over time', 'timeline', 'change']):
             return ChartType.LINE
         
-        # Default
+        elif any(word in query_lower for word in ['proportion', 'percentage', 'share', 'part of']):
+            return ChartType.PIE
+        
+        elif any(word in query_lower for word in ['compare', 'comparison', 'versus', 'vs']):
+            if has_two_dimensions and has_value_column:
+                return ChartType.HEATMAP  # Comparison across two dimensions
+            else:
+                return ChartType.BAR
+        
+        # Check for dual-axis specific patterns first
+        dual_axis_indicators = [
+            'dual axis', 'dual-axis', 'secondary axis', 'left y-axis', 'right y-axis',
+            'bars and line', 'bar and line', 'two y axis', 'two y-axis'
+        ]
+        
+        if any(indicator in query_lower for indicator in dual_axis_indicators):
+            return ChartType.DUAL_AXIS
+        
+        # Check for combo chart patterns (bars + line combination)
+        has_bars = any(word in query_lower for word in ['bars for', 'use bars', 'bar chart'])
+        has_line = any(word in query_lower for word in ['line for', 'use line', 'line chart'])
+        
+        if has_bars and has_line:
+            return ChartType.DUAL_AXIS
+        
+        # Check for complex styling that requires fallback
+        complex_styling = ['gradient color', 'data labels', 'custom styling', 'advanced formatting']
+        if any(indicator in query_lower for indicator in complex_styling):
+            return ChartType.COMPLEX_MULTI  # Still needs fallback for advanced styling
+        
+        # Special handling for "value by category" patterns (should be bar chart, not heatmap)
+        if ' by ' in query_lower:
+            by_parts = query_lower.split(' by ')
+            if len(by_parts) == 2:  # Simple "X by Y" pattern
+                after_by = by_parts[1].strip()
+                # If there's no "and" or comma after "by", it's single dimension grouping
+                if not any(indicator in after_by for indicator in multi_dim_indicators):
+                    return ChartType.BAR
+        
+        # Default based on data structure and query patterns
+        if has_two_dimensions and has_value_column:
+            # Three variables detected -> likely heatmap
+            return ChartType.HEATMAP
+        elif has_two_dimensions:
+            # Two variables -> scatter plot
+            return ChartType.SCATTER
         else:
+            # Default fallback
             return ChartType.BAR
+    
+    @classmethod
+    def _detect_chart_type(cls, query_lower: str) -> ChartType:
+        """Detect chart type from query text using intelligent analysis"""
+        
+        # First, check for explicit chart type mentions (highest confidence)
+        for chart_type, patterns in cls.CHART_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, query_lower):
+                    return chart_type
+        
+        # If no explicit chart type, use intelligent intent detection
+        return cls._intelligent_chart_detection(query_lower)
+    
+    @classmethod
+    def _intelligent_chart_detection(cls, query_lower: str) -> ChartType:
+        """Use intelligent analysis to determine the best chart type based on intent"""
+        
+        # Analyze query intent patterns
+        intent_indicators = {
+            'distribution': ['distribution', 'spread', 'frequency', 'how many', 'count of'],
+            'comparison': ['compare', 'versus', 'vs', 'difference between', 'which is higher', 'top', 'bottom'],
+            'relationship': ['relationship', 'correlation', 'association', 'connected', 'related'],
+            'trend': ['trend', 'over time', 'timeline', 'change', 'growth', 'decline'],
+            'composition': ['part of', 'percentage', 'proportion', 'share', 'breakdown'],
+            'aggregation': ['total', 'sum', 'average', 'by category', 'by region', 'grouped by']
+        }
+        
+        # Count intent matches
+        intent_scores = {}
+        for intent, indicators in intent_indicators.items():
+            score = sum(1 for indicator in indicators if indicator in query_lower)
+            if score > 0:
+                intent_scores[intent] = score
+        
+        # Determine chart type based on strongest intent
+        if not intent_scores:
+            return ChartType.BAR  # Default fallback
+        
+        primary_intent = max(intent_scores.keys(), key=lambda k: intent_scores[k])
+        
+        # Map intents to appropriate chart types
+        if primary_intent == 'distribution':
+            return ChartType.HISTOGRAM
+        elif primary_intent == 'comparison':
+            # Check if it's a heatmap-style comparison (by two dimensions)
+            if ' by ' in query_lower and len(query_lower.split(' by ')) > 1:
+                after_by = query_lower.split(' by ')[1]
+                if ' and ' in after_by or ',' in after_by:
+                    return ChartType.HEATMAP
+            return ChartType.BAR
+        elif primary_intent == 'relationship':
+            # Check for regression indicators
+            regression_terms = ['linear', 'regression', 'fit', 'predict']
+            if any(term in query_lower for term in regression_terms):
+                return ChartType.REGRESSION
+            return ChartType.SCATTER
+        elif primary_intent == 'trend':
+            return ChartType.LINE
+        elif primary_intent == 'composition':
+            return ChartType.PIE
+        elif primary_intent == 'aggregation':
+            # Check if it's multi-dimensional aggregation (heatmap territory)
+            if ' by ' in query_lower:
+                after_by = query_lower.split(' by ')[1]
+                if ' and ' in after_by or ',' in after_by:
+                    return ChartType.HEATMAP
+            return ChartType.BAR
+        
+        return ChartType.BAR
     
     @classmethod
     def _extract_columns(cls, query_lower: str, df_columns: List[str]) -> Tuple[Optional[str], Optional[str]]:
         """Extract column names from query text with improved matching"""
         mentioned_columns = []
         
+        # Special handling for dual-axis queries
+        if any(indicator in query_lower for indicator in ['dual axis', 'dual-axis', 'bars and line', 'bar and line']):
+            # For dual-axis, we need to extract the grouping column and two metrics
+            # Look for patterns like "monthly sales and profit" or "sales by month"
+            
+            # Find all column mentions
+            for col in df_columns:
+                col_lower = col.lower()
+                col_with_spaces = col_lower.replace('_', ' ')
+                
+                if col_lower in query_lower or col_with_spaces in query_lower:
+                    if col not in mentioned_columns:
+                        mentioned_columns.append(col)
+        
         # Special handling for heatmap queries with "by" pattern (e.g., "profit by category and region")
-        if 'heatmap' in query_lower and ' by ' in query_lower:
+        elif 'heatmap' in query_lower and ' by ' in query_lower:
             # Extract the pattern: "value by column1 and column2"
             by_parts = query_lower.split(' by ')
             if len(by_parts) >= 2:
@@ -294,6 +540,40 @@ class VisualizationParser:
     @classmethod
     def _extract_color_column(cls, query_lower: str, df_columns: List[str]) -> Optional[str]:
         """Extract color column from query text - for heatmaps, this represents the value column"""
+        
+        # Special handling for dual-axis charts
+        if any(indicator in query_lower for indicator in ['dual axis', 'dual-axis', 'bars and line', 'bar and line']):
+            # For dual-axis, color_column represents the second metric (line chart)
+            
+            # Look for patterns like "bars for X and line for Y"
+            if 'line for' in query_lower:
+                line_part = query_lower.split('line for')[1].strip()
+                # Extract the first word after "line for"
+                line_metric = line_part.split()[0] if line_part else ''
+                for col in df_columns:
+                    col_lower = col.lower()
+                    if col_lower in line_metric or line_metric in col_lower:
+                        return col
+            
+            # Look for "profit" specifically mentioned (common second metric)
+            if 'profit' in query_lower:
+                for col in df_columns:
+                    if 'profit' in col.lower():
+                        return col
+            
+            # Find all numeric columns mentioned and return the one that's different from y_column
+            numeric_mentions = []
+            for col in df_columns:
+                col_lower = col.lower()
+                if col_lower in query_lower:
+                    # Check if it's a numeric-sounding column
+                    if any(term in col_lower for term in ['profit', 'sales', 'revenue', 'amount', 'total', 'count']):
+                        numeric_mentions.append(col)
+            
+            # Return a different column than what might be in y_column
+            # This is a simple heuristic - in practice, the LLM should be more specific
+            if len(numeric_mentions) >= 2:
+                return numeric_mentions[-1]  # Return the last one found
         
         # Special handling for heatmap value extraction
         if 'heatmap' in query_lower:
@@ -376,7 +656,7 @@ class ChartGenerator:
     def generate_chart(self, df: pd.DataFrame, request: VisualizationRequest, 
                       library: Optional[str] = None) -> VisualizationResult:
         """
-        Generate a chart based on the visualization request.
+        Generate a chart based on the visualization request with confidence-based routing.
         
         Args:
             df: DataFrame to visualize
@@ -388,13 +668,58 @@ class ChartGenerator:
         """
         library = library or self.default_library
         
+        # CONFIDENCE-BASED ROUTING: Only use our tool when we're confident
+        confidence_score = request.additional_params.get('confidence_score', 0.0) if request.additional_params else 0.0
+        
+        # Dynamic threshold based on chart type complexity
+        if request.chart_type in [ChartType.BAR, ChartType.LINE, ChartType.SCATTER]:
+            confidence_threshold = 0.6  # Lower threshold for simple charts
+        elif request.chart_type in [ChartType.HISTOGRAM, ChartType.BOX, ChartType.PIE, ChartType.TREEMAP]:
+            confidence_threshold = 0.7  # Standard threshold
+        else:
+            confidence_threshold = 0.8  # Higher threshold for complex charts
+        
+        # SIMPLIFIED ROUTING: Only fallback for explicitly complex requests
+        # Don't use confidence scores - they're unreliable
+        
+        # Check for explicit complexity indicators based on chart type and parameters
+        explicit_complex = (
+            request.chart_type in [ChartType.DUAL_AXIS, ChartType.COMPLEX_MULTI] or
+            (request.additional_params and 
+             any(key in request.additional_params for key in ['gradient', 'custom_color', 'data_labels', 'annotations']))
+        )
+        
+        if explicit_complex:
+            # Explicitly complex - let LLM handle it
+            return VisualizationResult(
+                chart_data=None,
+                chart_type=request.chart_type.value,
+                library=library,
+                title=request.title or "Chart",
+                success=False,
+                error_message=f"FALLBACK_TO_CODE:explicit_complexity"
+            )
+        
         try:
             if library == "plotly":
                 return self._generate_plotly_chart(df, request)
             else:
                 return self._generate_matplotlib_chart(df, request)
         except Exception as e:
-            # Use enhanced error handling if available
+            error_str = str(e)
+            
+            # Check if this is a fallback request (not a real error)
+            if "FALLBACK_TO_CODE:" in error_str:
+                return VisualizationResult(
+                    chart_data=None,
+                    chart_type=request.chart_type.value,
+                    library=library,
+                    title=request.title or "Chart",
+                    success=False,
+                    error_message=error_str  # Pass through the fallback signal
+                )
+            
+            # Use enhanced error handling for real errors
             if error_handler:
                 error_info = error_handler.handle_error(e, f"Chart generation - {request.chart_type.value}")
                 error_message = error_info.user_message
@@ -428,10 +753,17 @@ class ChartGenerator:
             fig = self._create_plotly_pie(df, request)
         elif chart_type == ChartType.HEATMAP:
             fig = self._create_plotly_heatmap(df, request)
+        elif chart_type == ChartType.TREEMAP:
+            fig = self._create_plotly_treemap(df, request)
         elif chart_type == ChartType.AREA:
             fig = self._create_plotly_area(df, request)
         elif chart_type == ChartType.REGRESSION:
             fig = self._create_plotly_regression(df, request)
+        elif chart_type == ChartType.DUAL_AXIS:
+            fig = self._create_plotly_dual_axis(df, request)
+        elif chart_type in [ChartType.COMBO, ChartType.COMPLEX_MULTI, ChartType.CUSTOM]:
+            # These chart types still require agent code generation
+            raise ValueError(f"FALLBACK_TO_CODE:{chart_type.value}")
         else:
             raise ValueError(f"Unsupported chart type: {chart_type}")
         
@@ -731,6 +1063,225 @@ class ChartGenerator:
             )
             
             return fig
+    
+    def _create_plotly_treemap(self, df: pd.DataFrame, request: VisualizationRequest) -> go.Figure:
+        """Create Plotly treemap visualization"""
+        import plotly.express as px
+        
+        # For treemaps, we need a categorical column and a value column
+        # x_column = categorical (path), color_column or y_column = values
+        
+        if request.x_column:
+            # Use x_column as the categorical path
+            path_column = request.x_column
+            
+            # Determine value column
+            value_column = None
+            if request.color_column and pd.api.types.is_numeric_dtype(df[request.color_column]):
+                value_column = request.color_column
+            elif request.y_column and pd.api.types.is_numeric_dtype(df[request.y_column]):
+                value_column = request.y_column
+            else:
+                # Find a numeric column to use as values
+                numeric_cols = df.select_dtypes(include=['number']).columns
+                if len(numeric_cols) > 0:
+                    value_column = numeric_cols[0]
+                else:
+                    raise ValueError("No numeric column found for treemap values")
+            
+            # Aggregate data by path column
+            treemap_data = df.groupby(path_column)[value_column].sum().reset_index()
+            
+            # Create treemap
+            fig = px.treemap(
+                treemap_data,
+                path=[path_column],
+                values=value_column,
+                title=request.title or f"Treemap: {value_column} by {path_column}"
+            )
+            
+            # Update layout for better readability
+            fig.update_layout(
+                margin=dict(t=50, l=25, r=25, b=25)
+            )
+            
+            return fig
+        else:
+            # If no specific column specified, try to find suitable columns
+            # Look for categorical columns and numeric columns
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+            numeric_cols = df.select_dtypes(include=['number']).columns
+            
+            if len(categorical_cols) > 0 and len(numeric_cols) > 0:
+                path_column = categorical_cols[0]
+                value_column = numeric_cols[0]
+                
+                # Aggregate data
+                treemap_data = df.groupby(path_column)[value_column].sum().reset_index()
+                
+                # Create treemap
+                fig = px.treemap(
+                    treemap_data,
+                    path=[path_column],
+                    values=value_column,
+                    title=request.title or f"Treemap: {value_column} by {path_column}"
+                )
+                
+                # Update layout
+                fig.update_layout(
+                    margin=dict(t=50, l=25, r=25, b=25)
+                )
+                
+                return fig
+            else:
+                raise ValueError("Need at least one categorical column and one numeric column for treemap")
+    
+    def _create_plotly_dual_axis(self, df: pd.DataFrame, request: VisualizationRequest) -> go.Figure:
+        """Create Plotly dual-axis chart with bars and line"""
+        from plotly.subplots import make_subplots
+        import numpy as np
+        
+        # For dual-axis charts, we need at least 2 numeric columns
+        # x_column = grouping dimension (e.g., Month, Category)
+        # y_column = first metric (bars, left axis)
+        # color_column = second metric (line, right axis)
+        
+        if not request.x_column:
+            # Try to find a suitable grouping column
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns
+            datetime_cols = df.select_dtypes(include=['datetime64']).columns
+            
+            if len(datetime_cols) > 0:
+                x_col = datetime_cols[0]
+                # Extract month/period from datetime for grouping
+                df = df.copy()
+                df['Period'] = df[x_col].dt.strftime('%Y-%m')
+                x_col = 'Period'
+            elif len(categorical_cols) > 0:
+                x_col = categorical_cols[0]
+            else:
+                raise ValueError("No suitable grouping column found for dual-axis chart")
+        else:
+            x_col = request.x_column
+        
+        # Find numeric columns for the two y-axes
+        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+        
+        if len(numeric_cols) < 2:
+            raise ValueError("Need at least 2 numeric columns for dual-axis chart")
+        
+        # Determine which columns to use for each axis
+        y1_col = None  # Primary axis (bars)
+        y2_col = None  # Secondary axis (line)
+        
+        # Smart column selection based on request and common patterns
+        if request.y_column and request.y_column in numeric_cols:
+            y1_col = request.y_column
+        
+        if request.color_column and request.color_column in numeric_cols and request.color_column != y1_col:
+            y2_col = request.color_column
+        
+        # If we don't have both columns, use heuristics
+        if not y1_col or not y2_col:
+            # Look for common patterns in column names
+            sales_cols = [col for col in numeric_cols if any(term in col.lower() for term in ['sales', 'revenue', 'amount'])]
+            profit_cols = [col for col in numeric_cols if 'profit' in col.lower()]
+            
+            # Prefer sales for bars (primary) and profit for line (secondary)
+            if sales_cols and profit_cols:
+                y1_col = sales_cols[0]
+                y2_col = profit_cols[0]
+            elif len(numeric_cols) >= 2:
+                # Fallback to first two numeric columns
+                available_cols = [col for col in numeric_cols if col != y1_col]
+                if not y1_col:
+                    y1_col = numeric_cols[0]
+                    available_cols = numeric_cols[1:]
+                if not y2_col and available_cols:
+                    y2_col = available_cols[0]
+        
+        # Final validation
+        if not y1_col or not y2_col or y1_col == y2_col:
+            if len(numeric_cols) >= 2:
+                y1_col = numeric_cols[0]
+                y2_col = numeric_cols[1]
+            else:
+                raise ValueError("Need at least 2 different numeric columns for dual-axis chart")
+        
+        # Prepare data for aggregation
+        try:
+            # Ensure we have unique columns for aggregation
+            agg_columns = [y1_col, y2_col]
+            if y1_col == y2_col:
+                # If same column, just use it once
+                agg_columns = [y1_col]
+            
+            # Check if x_col is suitable for grouping
+            if x_col in df.columns and df[x_col].dtype in ['object', 'category'] or x_col == 'Period':
+                agg_data = df.groupby(x_col)[agg_columns].sum().reset_index()
+                
+                # If we had duplicate columns, duplicate the result
+                if y1_col == y2_col and len(agg_columns) == 1:
+                    agg_data[f'{y1_col}_line'] = agg_data[y1_col]
+                    y2_col = f'{y1_col}_line'
+            else:
+                # If x_col is not suitable for grouping, use data as-is
+                agg_data = df[[x_col, y1_col, y2_col]].copy()
+                
+        except Exception as e:
+            # If grouping fails, use data as-is
+            try:
+                agg_data = df[[x_col, y1_col, y2_col]].copy()
+            except KeyError:
+                # If columns don't exist, create minimal data
+                agg_data = pd.DataFrame({
+                    x_col: df[x_col] if x_col in df.columns else range(len(df)),
+                    y1_col: df[y1_col] if y1_col in df.columns else [1] * len(df),
+                    y2_col: df[y2_col] if y2_col in df.columns else [1] * len(df)
+                })
+        
+        # Create subplot with secondary y-axis
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        
+        # Add bar chart on primary y-axis (left)
+        fig.add_trace(
+            go.Bar(
+                x=agg_data[x_col],
+                y=agg_data[y1_col],
+                name=y1_col,
+                marker_color='lightblue',  # Default color, can be enhanced
+                yaxis='y'
+            ),
+            secondary_y=False
+        )
+        
+        # Add line chart on secondary y-axis (right)
+        fig.add_trace(
+            go.Scatter(
+                x=agg_data[x_col],
+                y=agg_data[y2_col],
+                mode='lines+markers',
+                name=y2_col,
+                line=dict(color='red', width=3),
+                marker=dict(size=8),
+                yaxis='y2'
+            ),
+            secondary_y=True
+        )
+        
+        # Update layout and axes
+        fig.update_layout(
+            title=request.title or f"Dual-Axis Chart: {y1_col} and {y2_col}",
+            xaxis_title=x_col,
+            showlegend=True,
+            hovermode='x unified'
+        )
+        
+        # Update y-axes labels
+        fig.update_yaxes(title_text=y1_col, secondary_y=False)
+        fig.update_yaxes(title_text=y2_col, secondary_y=True)
+        
+        return fig
     
     def _create_plotly_area(self, df: pd.DataFrame, request: VisualizationRequest) -> go.Figure:
         """Create Plotly area chart"""

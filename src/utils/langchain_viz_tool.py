@@ -39,6 +39,9 @@ class DataFrameVisualizationTool(BaseTool):
     - Visual representations of data
     - Histograms, bar charts, line charts, scatter plots, etc.
     - Data distributions or correlations
+    - Heatmaps, correlation matrices, pivot table visualizations
+    
+    IMPORTANT: This tool handles ALL visualization types including heatmaps. Do NOT use pandas, matplotlib, seaborn, or other libraries directly.
     
     Input should be a natural language description of what to visualize.
     Examples:
@@ -46,6 +49,8 @@ class DataFrameVisualizationTool(BaseTool):
     - "Show a histogram of age distribution"
     - "Plot price vs quantity as a scatter plot"
     - "Generate a line chart showing trends over time"
+    - "Show a heatmap of profit by category and region"
+    - "Create a correlation matrix heatmap"
     """
     
     args_schema: type[BaseModel] = VisualizationInput
@@ -88,6 +93,10 @@ class DataFrameVisualizationTool(BaseTool):
             box_plot_indicators = ['box plot', 'boxplot', 'box chart']
             is_box_plot_request = any(indicator in query_lower for indicator in box_plot_indicators)
             
+            # HEATMAP DETECTION AND ENHANCEMENT
+            heatmap_indicators = ['heatmap', 'heat map', 'correlation matrix']
+            is_heatmap_request = any(indicator in query_lower for indicator in heatmap_indicators)
+            
             # REGRESSION DETECTION
             regression_indicators = [
                 'regression', 'linear regression', 'regression line', 'regression plot',
@@ -107,7 +116,11 @@ class DataFrameVisualizationTool(BaseTool):
             has_context_clues = any(clue in query_lower for clue in context_clues)
             
             # Enhanced query processing
-            if is_box_plot_request:
+            if is_heatmap_request:
+                print(f"🔥 Detected heatmap request: {query}")
+                # For heatmaps, pass the original query directly
+                enhanced_query = query
+            elif is_box_plot_request:
                 print(f"📊 Detected box plot request: {query}")
                 # For box plots, ensure we extract the column name properly
                 enhanced_query = query
@@ -171,6 +184,11 @@ class DataFrameVisualizationTool(BaseTool):
                 return description
             else:
                 error_msg = viz_result.error_message if viz_result else "Unknown error"
+                
+                # Check if this is a fallback request
+                if error_msg and "FALLBACK_TO_CODE:" in error_msg:
+                    return f"CUSTOM_CODE_REQUIRED. This visualization needs custom implementation. Create the chart using pandas and plotly with the specific requirements from the query. Use only available packages: pandas, plotly.express, plotly.graph_objects, numpy."
+                
                 return f"Failed to create visualization: {error_msg}"
                 
         except Exception as e:
